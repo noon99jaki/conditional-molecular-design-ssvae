@@ -1,13 +1,16 @@
 from __future__ import print_function
 
+import os
 import numpy as np
 import tensorflow as tf
 
+# class Graph(object):
 
 class Model(object):
 
-    def __init__(self, seqlen_x, dim_x, dim_y, dim_z=100, dim_h=250, n_hidden=3, batch_size=200, beta=10000., char_set=[' ']):
-
+    def __init__(self, seqlen_x, dim_x, dim_y, dim_z=100, dim_h=250, n_hidden=3, batch_size=200, beta=10000.,
+                 char_set=[' '], save_uri='model.ckpt'):
+        self.save_uri = save_uri
         self.seqlen_x, self.dim_x, self.dim_y, self.dim_z, self.dim_h, self.n_hidden, self.batch_size = seqlen_x, dim_x, dim_y, dim_z, dim_h, n_hidden, batch_size
         self.beta = beta
         
@@ -27,7 +30,7 @@ class Model(object):
         self.y_L_mu, self.y_L_lsgms = tf.split(self.classifier_L_out, [self.dim_y, self.dim_y], 1)
         self.y_L_sample = self._draw_sample(self.y_L_mu, self.y_L_lsgms)
 
-        self.encoder_L_out = self._rnnencoder(self.x_L, self.y_L, self.dim_h, 2*self.dim_z, reuse = False)
+        self.encoder_L_out = tf.identity(self._rnnencoder(self.x_L, self.y_L, self.dim_h, 2*self.dim_z, reuse = False), "enc_L")
         self.z_L_mu, self.z_L_lsgms = tf.split(self.encoder_L_out, [self.dim_z, self.dim_z], 1)
         self.z_L_sample = self._draw_sample(self.z_L_mu, self.z_L_lsgms)
 
@@ -65,9 +68,56 @@ class Model(object):
         self.x_DU_recon = tf.nn.softmax(self.decoder_DU_out)
 
 
-        self.saver = tf.train.Saver()
+        self.saver = tf.train.Saver(max_to_keep=100)
         self.session = tf.Session()
-        
+
+
+    # def get_global_step(self):
+    #     global_step = self.graph.run(['global_step'], {})['global_step']
+    #     return global_step        
+
+
+    def trainXY(self, X, Xs, Y, scaler_Y, ntrn, ntst, frac, frac_val, experiment_dir):
+        tstX=X[-ntst:]
+        tstXs=Xs[-ntst:]
+        tstY=Y[-ntst:]
+
+        X=X[:ntrn]
+        Xs=Xs[:ntrn]
+        Y=Y[:ntrn]
+
+        nL=int(len(Y)*frac)
+        nU=len(Y)-nL
+        nL_trn=int(nL*(1-frac_val))
+        nL_val=nL-nL_trn
+        nU_trn=int(nU*(1-frac_val))
+        nU_val=nU-nU_trn
+        perm_id=np.random.permutation(len(Y))
+
+        trnX_L=X[perm_id[:nL_trn]]
+        trnXs_L=Xs[perm_id[:nL_trn]]
+        trnY_L=Y[perm_id[:nL_trn]]
+
+        valX_L=X[perm_id[nL_trn:nL_trn+nL_val]]
+        valXs_L=Xs[perm_id[nL_trn:nL_trn+nL_val]]
+        valY_L=Y[perm_id[nL_trn:nL_trn+nL_val]]
+
+        trnX_U=X[perm_id[nL_trn+nL_val:nL_trn+nL_val+nU_trn]]
+        trnXs_U=Xs[perm_id[nL_trn+nL_val:nL_trn+nL_val+nU_trn]]
+
+        valX_U=X[perm_id[nL_trn+nL_val+nU_trn:]]
+        valXs_U=Xs[perm_id[nL_trn+nL_val+nU_trn:]]
+
+        trnY_L=scaler_Y.transform(trnY_L)
+        valY_L=scaler_Y.transform(valY_L)
+
+        #trn_writer = tf.summary.FileWriter(os.path.join(experiment_dir, 'train-log'), self.session.graph)
+        #val_writer = tf.summary.FileWriter(os.path.join(experiment_dir, 'validation-log'))
+
+        self.train(trnX_L=trnX_L, trnXs_L=trnXs_L, trnY_L=trnY_L, trnX_U=trnX_U, trnXs_U=trnXs_U, #trn_writer=trn_writer,
+                    valX_L=valX_L, valXs_L=valXs_L, valY_L=valY_L, valX_U=valX_U, valXs_U=valXs_U) #, val_writer=val_writer)
+        # model.saver.save(self.session, save_uri)
+
 
     def train(self, trnX_L, trnXs_L, trnY_L, trnX_U, trnXs_U, valX_L, valXs_L, valY_L, valX_U, valXs_U):
 
@@ -112,9 +162,12 @@ class Model(object):
                 start_U=i*batch_size_U
                 end_U=start_U+batch_size_U
 
-                trn_res = self.session.run([train_op, cost, objL, objU, objYpred_MSE],
-                                      feed_dict = {self.x_L: trnX_L[start_L:end_L], self.xs_L: trnXs_L[start_L:end_L], self.y_L: trnY_L[start_L:end_L],
-                                      self.x_U: trnX_U[start_U:end_U], self.xs_U: trnXs_U[start_U:end_U]})
+                trn_res = self.session.run([train_op, cost, objL, objU, objYpred_MSE], feed_dict = {
+                    self.x_L: trnX_L[start_L:end_L], 
+                    self.xs_L: trnXs_L[start_L:end_L], 
+                    self.y_L: trnY_L[start_L:end_L],
+                    self.x_U: trnX_U[start_U:end_U],
+                    self.xs_U: trnXs_U[start_U:end_U]})
 
             val_res = []
             for i in range(10):
@@ -124,18 +177,27 @@ class Model(object):
                 start_U=i*batch_size_val_U
                 end_U=start_U+batch_size_val_U
             
-                val_res.append(self.session.run([cost_val, objL_val, objU_val, objYpred_MSE],
-                                  feed_dict = {self.x_L: valX_L[start_L:end_L], self.xs_L: valXs_L[start_L:end_L], self.y_L: valY_L[start_L:end_L],
-                                  self.x_U: valX_U[start_U:end_U], self.xs_U: valXs_U[start_U:end_U]}))
-            
+                val_res.append(self.session.run([cost_val, objL_val, objU_val, objYpred_MSE], feed_dict = {
+                    self.x_L: valX_L[start_L:end_L],
+                    self.xs_L: valXs_L[start_L:end_L],
+                    self.y_L: valY_L[start_L:end_L],
+                    self.x_U: valX_U[start_U:end_U],
+                    self.xs_U: valXs_U[start_U:end_U]}))
+
             val_res=np.mean(val_res,axis=0)
             print(epoch, ['Training', 'cost_trn', trn_res[1]])
             print('---', ['Validation', 'cost_val', val_res[0]])
+            self.saver.save(self.session, self.save_uri, epoch)  #global_step=self.get_global_step())
+
 
             val_log[epoch] = val_res[0]
             if epoch > 20 and np.min(val_log[0:epoch-10]) * 0.99 < np.min(val_log[epoch-10:epoch+1]):
                 print('---termination condition is met')
                 break
+
+
+    def restore(self):
+        self.saver.restore(self.session, self.save_uri)
 
 
     def predict(self, x_input):
