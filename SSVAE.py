@@ -3,6 +3,8 @@ from __future__ import print_function
 import os
 import numpy as np
 import tensorflow as tf
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error
 
 # class Graph(object):
 
@@ -70,14 +72,15 @@ class Model(object):
 
         self.saver = tf.train.Saver(max_to_keep=100)
         self.session = tf.Session()
-
+        self.scaler_Y = StandardScaler()
 
     # def get_global_step(self):
     #     global_step = self.graph.run(['global_step'], {})['global_step']
     #     return global_step        
 
 
-    def trainXY(self, X, Xs, Y, scaler_Y, ntrn, ntst, frac, frac_val, experiment_dir):
+    def trainXY(self, max_epoch, X, Xs, Y, ntrn, ntst, frac, frac_val, experiment_dir):
+        self.scaler_Y.fit(Y)
         tstX=X[-ntst:]
         tstXs=Xs[-ntst:]
         tstY=Y[-ntst:]
@@ -108,18 +111,24 @@ class Model(object):
         valX_U=X[perm_id[nL_trn+nL_val+nU_trn:]]
         valXs_U=Xs[perm_id[nL_trn+nL_val+nU_trn:]]
 
-        trnY_L=scaler_Y.transform(trnY_L)
-        valY_L=scaler_Y.transform(valY_L)
+        trnY_L=self.scaler_Y.transform(trnY_L)
+        valY_L=self.scaler_Y.transform(valY_L)
 
         #trn_writer = tf.summary.FileWriter(os.path.join(experiment_dir, 'train-log'), self.session.graph)
         #val_writer = tf.summary.FileWriter(os.path.join(experiment_dir, 'validation-log'))
 
-        self.train(trnX_L=trnX_L, trnXs_L=trnXs_L, trnY_L=trnY_L, trnX_U=trnX_U, trnXs_U=trnXs_U, #trn_writer=trn_writer,
-                    valX_L=valX_L, valXs_L=valXs_L, valY_L=valY_L, valX_U=valX_U, valXs_U=valXs_U) #, val_writer=val_writer)
+        self.train(max_epoch, trnX_L=trnX_L, trnXs_L=trnXs_L, trnY_L=trnY_L, trnX_U=trnX_U, trnXs_U=trnXs_U, #trn_writer=trn_writer,
+                   valX_L=valX_L, valXs_L=valXs_L, valY_L=valY_L, valX_U=valX_U, valXs_U=valXs_U) #, val_writer=val_writer)
         # model.saver.save(self.session, save_uri)
 
+        ## property prediction performance
+        tstY_hat=self.scaler_Y.inverse_transform(self.predict(tstX))
 
-    def train(self, trnX_L, trnXs_L, trnY_L, trnX_U, trnXs_U, valX_L, valXs_L, valY_L, valX_U, valXs_U):
+        for j in range(self.dim_y):
+            print([j, mean_absolute_error(tstY[:,j], tstY_hat[:,j])])
+
+
+    def train(self, max_epoch, trnX_L, trnXs_L, trnY_L, trnX_U, trnXs_U, valX_L, valXs_L, valY_L, valX_U, valXs_U):
 
         self.mu_prior=np.mean(trnY_L,0)   
         self.cov_prior=np.cov(trnY_L.T)     
@@ -150,8 +159,8 @@ class Model(object):
 
 
         # training
-        val_log=np.zeros(300)
-        for epoch in range(300):
+        val_log=np.zeros(max_epoch)
+        for epoch in range(max_epoch):
             [trnX_L, trnXs_L, trnY_L]=self._permutation([trnX_L, trnXs_L, trnY_L])
             [trnX_U, trnXs_U]=self._permutation([trnX_U, trnXs_U])
 
@@ -219,7 +228,16 @@ class Model(object):
 
         return sample_smiles
         
-    
+ 
+    def transform_target(self, yid, ytarget):
+        return (ytarget-self.scaler_Y.mean_[yid])/np.sqrt(self.scaler_Y.var_[yid])
+
+
+    def sampling_conditional_transform(self, yid, ytarget):
+        ytarget_transform = self.transform_target(yid, ytarget)
+        self.sampling_conditional(yid, ytarget_transform)
+
+
     def sampling_conditional(self, yid, ytarget):
     
         def random_cond_normal(yid, ytarget):
